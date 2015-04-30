@@ -63,6 +63,10 @@ PACKAGES['ceph']['rpm'] = [
     'python-ceph',
     'rbd-fuse',
 ]
+RHVERSION={}
+RHVERSION['ceph']={
+    '1.3.0':1    
+}
 
 
 def _get_config_value_for_remote(ctx, remote, config, key):
@@ -425,6 +429,12 @@ def _update_rpm_package_list_and_install(ctx, remote, rpm, config):
     :param rpm: list of packages names to install
     :param config: the config dict
     """
+    rh_versions=RHVERSION['ceph']
+    if 'rhbuild' in config:
+        if config['rhbuild'] in rh_versions:
+          log.info("Installing RH build")
+          _install_rh_build(ctx,remote,config)
+          return True
     baseparms = _get_baseurlinfo_and_dist(ctx, remote, config)
     log.info("Installing packages: {pkglist} on remote rpm {arch}".format(
         pkglist=", ".join(rpm), arch=baseparms['arch']))
@@ -437,12 +447,11 @@ def _update_rpm_package_list_and_install(ctx, remote, rpm, config):
         proj=project, release=RELEASE, dist_release=dist_release)
     rpm_name = "{rpm_nm}.rpm".format(rpm_nm=proj_release)
     base_url = "{start_of_url}/noarch/{rpm_name}".format(
-        start_of_url=start_of_url, rpm_name=rpm_name)
+        start_of_url=start_of_url, rpm_name=rpm_name)  
     # When this was one command with a pipe, it would sometimes
     # fail with the message 'rpm: no packages given for install'
     remote.run(args=['wget', base_url, ],)
     remote.run(args=['sudo', 'yum', '-y', 'localinstall', rpm_name])
-
     remote.run(args=['rm', '-f', rpm_name])
 
     uri = baseparms['uri']
@@ -470,6 +479,7 @@ def _update_rpm_package_list_and_install(ctx, remote, rpm, config):
                         'sudo', 'yum', 'install', pkg, '-y',
                         run.Raw(';'), 'fi']
             )
+            
         if pkg is None:
             remote.run(args=['sudo', 'yum', 'install', cpack, '-y'])
         else:
@@ -496,6 +506,9 @@ def verify_package_version(ctx, config, remote):
     if config.get("extras"):
         log.info("Skipping version verification...")
         return True
+    if config.get('rhbuild'):
+        log.info("Skipping version check for rh")
+        return True
     base_url = _get_baseurl(ctx, remote, config)
     version = _block_looking_for_package_version(
         remote,
@@ -520,6 +533,50 @@ def verify_package_version(ctx, config, remote):
         )
 
 
+def _install_rh_build(ctx, remote, config):
+    """
+    Installs RH build using ceph-deploy.
+
+    TODO: split this into at least two functions.
+
+    :param ctx: the argparse.Namespace object
+    :param rpm: list of packages names to install
+    :param config: the config dict
+    """
+    pkgs=['ceph-deploy']
+    for pkg in pkgs:
+      log.info("Check if ceph-deploy is already installed on system")
+      r= remote.run(
+          args = ['yum', 'list', 'installed',
+                 run.Raw(pkg)],
+          stdout=StringIO(),
+          check_status=False,
+      )
+      if r.stdout.getvalue().find(pkg) == -1:
+          log.info("Install ceph-deploy")
+          remote.run(args = ['sudo', 'yum', 'install', pkg, '-y'])
+      else:
+          log.info("Remove and Install ceph-deploy")
+          remote.run(args = ['sudo', 'yum', 'remove', pkg, '-y'])
+          remote.run(args = ['sudo', 'yum', 'install', pkg, '-y'])
+      
+    log.info("Check if ceph is already installed")
+    r = remote.run(
+          args = ['yum', 'list', 'installed','ceph'],
+          stdout=StringIO(),
+          check_status=False,
+      )
+    host=r.hostname
+    if r.stdout.getvalue().find('ceph') == -1:
+        #Key in on Role: for better install
+        log.info("Install ceph using ceph-deploy")
+        remote.run(args = ['sudo', 'ceph-deploy','install',run.Raw('--no-adjust-repos'), host])
+    else:
+        log.info("Remove and Install ceph")
+        remote.run(args = ['sudo', 'ceph-deploy', 'purge', host])
+        remote.run(args = ['sudo', 'ceph-deploy', 'uninstall', host])
+        remote.run(args = ['sudo', 'ceph-deploy', 'install', host])
+        
 def purge_data(ctx):
     """
     Purge /var/lib/ceph on every remote in ctx.
@@ -644,6 +701,17 @@ def _remove_rpm(ctx, config, remote, rpm):
     :param remote: the teuthology.orchestra.remote.Remote object
     :param rpm: list of packages names to remove
     """
+    
+    if config.get('rhbuild'):
+        log.info("Uninstalling packages using ceph-deploy")
+        r = remote.run(args=['date'],check_status=False)
+        host = r.hostname
+        remote.run(args = ['sudo', 'ceph-deploy', 'purge', host])
+        remote.run(args = ['sudo', 'ceph-deploy', 'uninstall', host])
+        log.info("Uninstalling ceph-deploy")
+        remote.run(args = ['sudo', 'yum', 'remove', 'ceph-deploy', '-y'],check_status=False)
+        return True
+
     log.info("Removing packages: {pkglist} on rpm system.".format(
         pkglist=", ".join(rpm)))
     baseparms = _get_baseurlinfo_and_dist(ctx, remote, config)
@@ -746,6 +814,11 @@ def remove_sources(ctx, config):
     :param ctx: the argparse.Namespace object
     :param config: the config dict
     """
+    
+    if config.get('rhbuild'):
+        log.info("Not required for rh")
+        return True
+        
     remove_sources_pkgs = {
         'deb': _remove_sources_list_deb,
         'rpm': _remove_sources_list_rpm,
@@ -776,7 +849,6 @@ def install(ctx, config):
     :param ctx: the argparse.Namespace object
     :param config: the config dict
     """
-
     project = config.get('project', 'ceph')
 
     debs = PACKAGES.get(project, {}).get('deb', [])
@@ -1267,6 +1339,11 @@ def task(ctx, config):
 
     flavor = config.get('flavor', 'basic')
 
+    rhbuild=None
+    if config.get('rhbuild'):
+        rhbuild=config.get('rhbuild')
+        log.info("Build is %s " % rhbuild)
+
     if config.get('path'):
         # local dir precludes any other flavors
         flavor = 'local'
@@ -1287,6 +1364,7 @@ def task(ctx, config):
             branch=config.get('branch'),
             tag=config.get('tag'),
             sha1=config.get('sha1'),
+            rhbuild=rhbuild,
             flavor=flavor,
             extra_packages=config.get('extra_packages', []),
             extras=config.get('extras', None),
