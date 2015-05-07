@@ -76,7 +76,7 @@ def normalize_config(ctx, config):
         if config is None:
             config = {'branch': 'master'}
         for _, roles_for_host in ctx.cluster.remotes.iteritems():
-            new_config[roles_for_host[0]] = config
+            new_config[roles_for_host[0]] = config.copy()
         return new_config
 
     new_config = {}
@@ -84,13 +84,13 @@ def normalize_config(ctx, config):
         if role_config is None:
             role_config = {'branch': 'master'}
         if '.' in role:
-            new_config[role] = role_config
+            new_config[role] = role_config.copy()
         else:
             for id_ in teuthology.all_roles_of_type(ctx.cluster, role):
                 name = '{type}.{id}'.format(type=role, id=id_)
                 # specific overrides generic
                 if name not in config:
-                    new_config[name] = role_config
+                    new_config[name] = role_config.copy()
     return new_config
 
 def validate_config(ctx, config):
@@ -1084,10 +1084,32 @@ def task(ctx, config):
     timeout = 300
     if config is not None and 'timeout' in config:
         timeout = config.pop('timeout')
-
     config = normalize_config(ctx, config)
+    log.debug('normalized config %s' % config)
+
+    overrides = ctx.config.get('overrides')
+    if overrides is not None:
+        overrides = overrides.get('kernel')
+    if overrides is not None:
+        if 'timeout' in overrides:
+            timeout = overrides.pop('timeout')
+        overrides = normalize_config(ctx, overrides)
+        log.debug('normalized overrides %s' % overrides)
+
+        # Handle a case when a version specified with one type of version key
+        # is overridden by a version specified with another type of version key
+        # (e.g. 'branch: foo' is overridden with 'tag: bar').  To be able to
+        # use deep_merge(), drop all version keys from the original config if
+        # the corresponding override has a version key.
+        for role, role_config in config.iteritems():
+            if (role in overrides and
+                    any(k in overrides[role] for k in version_keys)):
+                for k in version_keys:
+                    role_config.pop(k, None)
+        teuthology.deep_merge(config, overrides)
+
     validate_config(ctx, config)
-    log.info('config %s' % config)
+    log.info('config %s, timeout %d' % (config, timeout))
 
     need_install = {}  # sha1 to dl, or path to rpm or deb
     need_version = {}  # utsrelease or sha1
