@@ -28,6 +28,8 @@ from ..packaging import (
 log = logging.getLogger(__name__)
 
 
+version_keys = ['branch', 'tag', 'sha1', 'deb', 'rpm', 'koji', 'koji_task']
+
 def normalize_config(ctx, config):
     """
     Returns a config whose keys are all real roles.
@@ -68,8 +70,7 @@ def normalize_config(ctx, config):
     :param config: Configuration
     """
     if config is None or \
-            len(filter(lambda x: x in ['tag', 'branch', 'sha1', 'kdb',
-                                       'deb', 'rpm', 'koji', 'koji_task'],
+            len(filter(lambda x: x in version_keys + ['kdb'],
                        config.keys())) == len(config.keys()):
         new_config = {}
         if config is None:
