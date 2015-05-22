@@ -1022,7 +1022,7 @@ dict_templ = {
     'suite': Placeholder('suite'),
     'suite_branch': Placeholder('suite_branch'),
     'tasks': [
-        {'chef': None},
+        {'ansible.cephlab': None},
         {'clock.check': None}
     ],
 }
